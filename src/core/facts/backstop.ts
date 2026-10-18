@@ -331,7 +331,10 @@ export async function runFactsBackstop(
             // re-runnable), never a silent consume.
             max_attempts: 5,
             backoff_delay: 60_000,
-            timeout_ms: 180_000,
+            // 180s dead-letters qwen on CPU (the job is killed, the client
+            // abort wedges the single Ollama slot, and five attempts repeat
+            // it). 10 min matches HANDLER_DEFAULT_TIMEOUT_MS for facts-absorb.
+            timeout_ms: 600_000,
           },
         );
         return { mode: 'queue', enqueued: true, queueDepth: 0 };
