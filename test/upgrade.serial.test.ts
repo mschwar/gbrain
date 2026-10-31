@@ -357,3 +357,74 @@ describe('runUpgrade target verification (#4366)', () => {
     }
   });
 });
+
+describe('fork-aware repo slug & detectInstallMethod', () => {
+  const origArgv1 = process.argv[1];
+  const origSlug = process.env.GBRAIN_REPO_SLUG;
+
+  function restore() {
+    process.argv[1] = origArgv1;
+    if (origSlug === undefined) delete process.env.GBRAIN_REPO_SLUG;
+    else process.env.GBRAIN_REPO_SLUG = origSlug;
+  }
+
+  test('detectInstallMethod detects bun-link on a fork-only .git/config and resolves the fork slug', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-fork-only-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/acme-fork/gbrain.git\n',
+      );
+      writeFileSync(join(dir, 'src', 'cli.ts'), '// stub\n');
+      process.argv[1] = join(dir, 'src', 'cli.ts');
+
+      expect(upgradeModule.detectInstallMethod()).toBe('bun-link');
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('acme-fork/gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolveGbrainRepoSlug prefers non-upstream fork remote when both origin (upstream) and fork exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-dual-remote-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/garrytan/gbrain.git\n' +
+          '[remote "fork"]\n\turl = git@github.com:acme-fork/gbrain.git\n',
+      );
+
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('acme-fork/gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('GBRAIN_REPO_SLUG overrides detected .git/config remotes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-env-slug-'));
+    try {
+      process.env.GBRAIN_REPO_SLUG = 'github:custom-org/custom-gbrain.git';
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/custom-org/custom-gbrain.git\n',
+      );
+      writeFileSync(join(dir, 'src', 'cli.ts'), '// stub\n');
+      process.argv[1] = join(dir, 'src', 'cli.ts');
+
+      expect(upgradeModule.detectInstallMethod()).toBe('bun-link');
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('custom-org/custom-gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
