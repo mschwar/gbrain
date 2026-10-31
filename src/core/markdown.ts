@@ -179,9 +179,9 @@ function quoteAmbiguousFrontmatterScalars(content: string): string {
       // commas/text like `related: [[Note A]], [[Note B]]`). Distinguish
       // wikilinks from quoted 2D YAML arrays like `[["a", "b"]]`.
       const startsWithWikilink = /^\[\[(?!['"\s])[^\[\]\r\n]+\]\]/.test(value);
-      // Already quoted, a non-wikilink flow collection, or a block-scalar
-      // indicator — caller already handled quoting correctly; leave it alone.
-      if (!startsWithWikilink && /^['"[{|>]/.test(value)) return line;
+      // Already quoted, a non-wikilink flow collection, a block-scalar
+      // indicator, or an inline YAML comment (`key: # note: ...`) — leave it alone.
+      if (!startsWithWikilink && /^['"[{|>#]/.test(value)) return line;
       // The ambiguous cases gray-matter/js-yaml chokes on: a leading
       // Obsidian wikilink, an embedded ": " (looks like a nested mapping
       // key), or a trailing ":".

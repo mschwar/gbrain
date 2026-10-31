@@ -102,6 +102,29 @@ Body text.
     expect(putCall.args[1].frontmatter['source-title']).toBe('Everything is Context bookmark: Agentic file systems');
   });
 
+  test('CRLF frontmatter with trailing colon and inline comment on block-mapping header imports cleanly', async () => {
+    const content = [
+      '---',
+      'type: note',
+      'title: Summary:',
+      'extra-meta: # todo: populate extra fields',
+      '  owner: alice-example',
+      '---',
+      '',
+      'Body text.',
+      '',
+    ].join('\r\n');
+
+    const engine = mockEngine();
+    const result = await importFromContent(engine, 'notes/crlf-summary', content, { noEmbed: true });
+
+    expect(result.status).toBe('imported');
+    expect(result.error).toBeUndefined();
+    const putCall = (engine as any)._calls.find((call: any) => call.method === 'putPage');
+    expect(putCall.args[1].title).toBe('Summary:');
+    expect(putCall.args[1].frontmatter['extra-meta']).toEqual({ owner: 'alice-example' });
+  });
+
   test('unquoted Obsidian [[Wikilink]] frontmatter scalars import cleanly while preserving YAML flow arrays', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gbrain-wikilink-yaml-'));
     try {

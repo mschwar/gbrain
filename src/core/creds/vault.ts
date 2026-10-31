@@ -322,13 +322,19 @@ export function vaultEnvKeysFromMetas(metas: readonly CredentialMeta[]): Set<str
     const providerLower = m.provider.trim().toLowerCase();
     if (colonIdx >= 0) {
       const acct = idTrimmed.slice(colonIdx + 1).trim();
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) && (acct.includes('_') || providerLower === 'env')) {
+      if (
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) &&
+        (providerLower === 'env' || /^[A-Z][A-Z0-9_]*_[A-Z0-9_]+$/.test(acct))
+      ) {
         keys.add(acct.toUpperCase());
       }
     }
     if (m.account) {
       const acct = m.account.trim();
-      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) && (acct.includes('_') || providerLower === 'env')) {
+      if (
+        /^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) &&
+        (providerLower === 'env' || /^[A-Z][A-Z0-9_]*_[A-Z0-9_]+$/.test(acct))
+      ) {
         keys.add(acct.toUpperCase());
       }
     }

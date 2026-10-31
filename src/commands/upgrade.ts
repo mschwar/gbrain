@@ -11,9 +11,12 @@ export function normalizeGbrainRepoSlug(raw: string | undefined): string | null 
   if (!raw) return null;
   const cleaned = raw
     .trim()
+    .replace(/^git\+/i, '')
     .replace(/^github:/i, '')
     .replace(/^https?:\/\/github\.com\//i, '')
+    .replace(/^ssh:\/\/git@github\.com(?::\d+)?\//i, '')
     .replace(/^git@github\.com:/i, '')
+    .replace(/#.*$/, '')
     .replace(/\.git$/i, '')
     .replace(/^\/+|\/+$/g, '');
   return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(cleaned) ? cleaned : null;
@@ -24,23 +27,26 @@ export const GBRAIN_GITHUB_REPO =
 
 /**
  * Extract `<owner>/gbrain` (or explicitly configured `GBRAIN_REPO_SLUG`)
- * remotes from a `.git/config` text payload.
+ * remotes from a `.git/config` text payload. Only `[remote "<name>"]`
+ * sections are inspected so `[submodule]`, `[lfs]`, or `[url]` entries never
+ * bleed into remote attribution.
  */
 export function extractGbrainRemotesFromGitConfig(
   gitConfigText: string,
   envSlug: string | undefined = process.env.GBRAIN_REPO_SLUG,
 ): Array<{ remote: string; slug: string }> {
-  const configured = normalizeGbrainRepoSlug(envSlug) ?? GBRAIN_GITHUB_REPO;
+  const configured = normalizeGbrainRepoSlug(envSlug) ?? DEFAULT_GBRAIN_GITHUB_REPO;
   const results: Array<{ remote: string; slug: string }> = [];
-  let currentRemote = 'origin';
+  let currentRemote: string | null = null;
 
   for (const rawLine of gitConfigText.split(/\r?\n/)) {
     const line = rawLine.trim();
-    const header = line.match(/^\[remote\s+"([^"]+)"\]$/i);
-    if (header) {
-      currentRemote = header[1]!;
+    if (line.startsWith('[') && line.endsWith(']')) {
+      const header = line.match(/^\[remote\s+"([^"]+)"\]$/i);
+      currentRemote = header ? header[1]! : null;
       continue;
     }
+    if (!currentRemote) continue;
     const urlMatch = line.match(/^url\s*=\s*(.+)$/i);
     if (!urlMatch) continue;
     const url = urlMatch[1]!.trim();
@@ -53,7 +59,9 @@ export function extractGbrainRemotesFromGitConfig(
       results.push({ remote: currentRemote, slug: DEFAULT_GBRAIN_GITHUB_REPO });
       continue;
     }
-    const ghFork = url.match(/(?:github\.com[:/]|\/remotes\/)([A-Za-z0-9_.-]+\/gbrain)(?:\.git)?(?:\/|$)/i);
+    const ghFork = url.match(
+      /(?:github\.com(?::\d+)?[:/]|\/remotes\/)([A-Za-z0-9_.-]+\/gbrain)(?:\.git)?(?:\/|#|$)/i,
+    );
     if (ghFork) {
       results.push({ remote: currentRemote, slug: ghFork[1]! });
     }
@@ -61,13 +69,37 @@ export function extractGbrainRemotesFromGitConfig(
   return results;
 }
 
+function safeRealpathOrResolve(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function extractGbrainSlugFromPackageJson(pkgPath: string): { depSlug: string | null; repoSlug: string | null } {
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+    const rawDep = typeof pkg?.dependencies?.gbrain === 'string' ? pkg.dependencies.gbrain : undefined;
+    const depParsed = normalizeGbrainRepoSlug(rawDep);
+    const depSlug = depParsed && /\/gbrain$/i.test(depParsed) ? depParsed : null;
+
+    const rawRepo = (typeof pkg?.repository === 'string' ? pkg.repository : pkg?.repository?.url) ?? '';
+    const repoParsed = normalizeGbrainRepoSlug(rawRepo);
+    const repoSlug = repoParsed && /\/gbrain$/i.test(repoParsed) ? repoParsed : null;
+    return { depSlug, repoSlug };
+  } catch {
+    return { depSlug: null, repoSlug: null };
+  }
+}
+
 /**
  * Resolve the effective `<owner>/<repo>` slug for upgrade commands and
  * remediation hints. Priority:
  *   1. `GBRAIN_REPO_SLUG` environment override
  *   2. Non-upstream fork remote (`<owner>/gbrain`) in `.git/config`
- *   3. Upstream remote in `.git/config` or `package.json` repository field
- *   4. `DEFAULT_GBRAIN_GITHUB_REPO` (`garrytan/gbrain`)
+ *   3. Global bun manifest `dependencies.gbrain` (e.g. `github:<fork>/gbrain`)
+ *   4. Non-upstream `package.json` `repository` field, then upstream fallback
  */
 export function resolveGbrainRepoSlug(
   repoRoot?: string,
@@ -76,7 +108,8 @@ export function resolveGbrainRepoSlug(
   const explicit = normalizeGbrainRepoSlug(envSlug);
   if (explicit) return explicit;
 
-  const startDir = repoRoot ?? (process.argv[1] ? dirname(resolve(process.argv[1])) : null);
+  const startDir = repoRoot ?? (process.argv[1] ? dirname(safeRealpathOrResolve(process.argv[1])) : null);
+  let fallbackRepoSlug: string | null = null;
   if (startDir) {
     let dir = startDir;
     for (let i = 0; i < 6; i++) {
@@ -95,12 +128,14 @@ export function resolveGbrainRepoSlug(
       }
       const pkgPath = join(dir, 'package.json');
       if (existsSync(pkgPath)) {
-        try {
-          const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-          const rawRepo = (typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url) ?? '';
-          const parsed = normalizeGbrainRepoSlug(rawRepo);
-          if (parsed && /\/gbrain$/i.test(parsed)) return parsed;
-        } catch { /* ignore unreadable package.json */ }
+        const { depSlug, repoSlug } = extractGbrainSlugFromPackageJson(pkgPath);
+        if (depSlug && depSlug.toLowerCase() !== DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase()) {
+          return depSlug;
+        }
+        if (repoSlug && repoSlug.toLowerCase() !== DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase()) {
+          return repoSlug;
+        }
+        fallbackRepoSlug = fallbackRepoSlug ?? depSlug ?? repoSlug;
       }
       const parent = dirname(dir);
       if (parent === dir) break;
@@ -108,20 +143,72 @@ export function resolveGbrainRepoSlug(
     }
   }
 
-  return GBRAIN_GITHUB_REPO;
+  // When running from a global bun install without GBRAIN_REPO_SLUG, check the
+  // global manifest's `dependencies.gbrain` (`github:<fork>/gbrain`) even if the
+  // fork kept upstream's `repository` field inside its own package.json.
+  if (!repoRoot) {
+    try {
+      const globalPkg = join(resolveBunGlobalRoot(), 'package.json');
+      if (existsSync(globalPkg)) {
+        const { depSlug } = extractGbrainSlugFromPackageJson(globalPkg);
+        if (depSlug) return depSlug;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return fallbackRepoSlug ?? DEFAULT_GBRAIN_GITHUB_REPO;
 }
 
-function resolvePreferredForkRemote(repoRoot: string, targetSlug: string): string | null {
-  if (targetSlug.toLowerCase() === DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase()) return null;
+export type BunLinkPullPlan =
+  | { kind: 'default' }
+  | { kind: 'explicit'; remote: string; branch: string }
+  | { kind: 'error'; reason: string };
+
+export function planBunLinkPull(repoRoot: string, targetSlug: string): BunLinkPullPlan {
+  if (
+    targetSlug.toLowerCase() === DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase() &&
+    !normalizeGbrainRepoSlug(process.env.GBRAIN_REPO_SLUG)
+  ) {
+    return { kind: 'default' };
+  }
   const gitConfigPath = join(repoRoot, '.git', 'config');
-  if (!existsSync(gitConfigPath)) return null;
+  if (!existsSync(gitConfigPath)) {
+    return { kind: 'error', reason: `missing .git/config under ${repoRoot}` };
+  }
+  let matchedRemote: string | null = null;
   try {
     const cfg = readFileSync(gitConfigPath, 'utf-8');
     const remotes = extractGbrainRemotesFromGitConfig(cfg, targetSlug);
     const match = remotes.find((r) => r.slug.toLowerCase() === targetSlug.toLowerCase());
-    if (match && match.remote !== 'origin') return match.remote;
-  } catch { /* ignore */ }
-  return null;
+    matchedRemote = match?.remote ?? null;
+  } catch {
+    return { kind: 'error', reason: `unreadable .git/config under ${repoRoot}` };
+  }
+  if (!matchedRemote) {
+    return {
+      kind: 'error',
+      reason: `no git remote in ${repoRoot} matches ${targetSlug} (refusing to pull a different remote)`,
+    };
+  }
+  let branch = '';
+  try {
+    branch = execFileSync('git', ['-C', repoRoot, 'symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      encoding: 'utf-8',
+      timeout: 10_000,
+    }).trim();
+  } catch {
+    return {
+      kind: 'error',
+      reason: `detached HEAD at ${repoRoot} — checkout a branch before upgrading`,
+    };
+  }
+  if (!branch || branch === 'HEAD') {
+    return {
+      kind: 'error',
+      reason: `detached HEAD at ${repoRoot} — checkout a branch before upgrading`,
+    };
+  }
+  return { kind: 'explicit', remote: matchedRemote, branch };
 }
 
 /**
@@ -169,15 +256,16 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
         break;
       }
       const linkSlug = resolveGbrainRepoSlug(linkInfo.repoRoot);
-      const forkRemote = resolvePreferredForkRemote(linkInfo.repoRoot, linkSlug);
+      const pullPlan = planBunLinkPull(linkInfo.repoRoot, linkSlug);
       console.log(`Upgrading bun-link source clone at ${linkInfo.repoRoot}... (${linkSlug})`);
+      if (pullPlan.kind === 'error') {
+        console.error(`Auto-upgrade refused: ${pullPlan.reason}`);
+        setCliExitVerdict(1);
+        break;
+      }
       try {
-        if (forkRemote) {
-          const branch = execFileSync('git', ['-C', linkInfo.repoRoot, 'rev-parse', '--abbrev-ref', 'HEAD'], {
-            encoding: 'utf-8',
-            timeout: 10_000,
-          }).trim();
-          execFileSync('git', ['-C', linkInfo.repoRoot, 'pull', '--ff-only', forkRemote, branch], {
+        if (pullPlan.kind === 'explicit') {
+          execFileSync('git', ['-C', linkInfo.repoRoot, 'pull', '--ff-only', pullPlan.remote, pullPlan.branch], {
             stdio: 'inherit',
             timeout: 120_000,
           });
@@ -196,10 +284,10 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
     case 'bun': {
       console.log(`Upgrading via bun... (${activeRepoSlug})`);
       const bunGlobalRoot = resolveBunGlobalRoot();
-      const explicitFork = normalizeGbrainRepoSlug(process.env.GBRAIN_REPO_SLUG);
+      const isForkInstall = activeRepoSlug.toLowerCase() !== DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase();
       try {
-        if (explicitFork && explicitFork.toLowerCase() !== DEFAULT_GBRAIN_GITHUB_REPO.toLowerCase()) {
-          execFileSync('bun', ['add', '-g', `github:${explicitFork}`], {
+        if (isForkInstall) {
+          execFileSync('bun', ['add', '-g', `github:${activeRepoSlug}`], {
             cwd: bunGlobalRoot,
             stdio: 'inherit',
             timeout: 120_000,
@@ -210,7 +298,11 @@ export async function runUpgrade(args: string[], opts: { targetVersion?: string 
         upgraded = true;
       } catch {
         console.error('Upgrade failed. Try running manually:');
-        console.error(`  cd ${bunGlobalRoot} && bun update gbrain`);
+        console.error(
+          isForkInstall
+            ? `  cd ${bunGlobalRoot} && bun add -g github:${activeRepoSlug}`
+            : `  cd ${bunGlobalRoot} && bun update gbrain`,
+        );
       }
       break;
     }
@@ -1111,17 +1203,14 @@ function detectBunLink(): { repoRoot: string } | null {
     const argv1 = process.argv[1];
     if (!argv1) return null;
 
-    const configuredRepo = normalizeGbrainRepoSlug(process.env.GBRAIN_REPO_SLUG) ?? GBRAIN_GITHUB_REPO;
+    const fallbackSlug = GBRAIN_GITHUB_REPO.toLowerCase();
     let dir = dirname(resolve(argv1));
     for (let i = 0; i < 6; i++) {
       const gitConfigPath = join(dir, '.git', 'config');
       if (existsSync(gitConfigPath)) {
         try {
           const cfg = readFileSync(gitConfigPath, 'utf-8');
-          if (
-            cfg.toLowerCase().includes(configuredRepo.toLowerCase()) ||
-            extractGbrainRemotesFromGitConfig(cfg).length > 0
-          ) {
+          if (extractGbrainRemotesFromGitConfig(cfg, process.env.GBRAIN_REPO_SLUG || fallbackSlug).length > 0) {
             return { repoRoot: dir };
           }
         } catch { /* unreadable config — not our case */ }
@@ -1144,9 +1233,9 @@ function detectBunLink(): { repoRoot: string } | null {
  * npm, the package is the squatter — an unrelated `gbrain@1.3.x` that
  * silently overwrites our binary. This function reads the install
  * directory's package.json and checks two non-spoofable signals:
- *   - `repository.url` contains `garrytan/gbrain` or `<owner>/gbrain` fork
- *   - the install dir contains a `src/cli.ts` file (squatter ships
- *     compiled binary, not source)
+ *   - `repository.url` contains `garrytan/gbrain` or configured `GBRAIN_REPO_SLUG`
+ *   - the install dir contains a `src/cli.ts` file (git/source installs of
+ *     gbrain and forks always ship `src/cli.ts`; the npm squatter ships `dist/`)
  *
  * If neither matches, returns 'suspect' and the caller surfaces a loud
  * recovery message. Codex's plan-review noted these signals are spoofable
@@ -1159,7 +1248,7 @@ function classifyBunInstall(): 'canonical' | 'suspect' {
     const argv1 = process.argv[1];
     if (!argv1) return 'suspect';
 
-    const configuredRepo = normalizeGbrainRepoSlug(process.env.GBRAIN_REPO_SLUG) ?? GBRAIN_GITHUB_REPO;
+    const configuredRepo = normalizeGbrainRepoSlug(process.env.GBRAIN_REPO_SLUG) ?? DEFAULT_GBRAIN_GITHUB_REPO;
     // Walk up from argv1 looking for the package.json that owns this install.
     let dir = dirname(realpathSync(argv1));
     for (let i = 0; i < 6; i++) {
@@ -1170,15 +1259,14 @@ function classifyBunInstall(): 'canonical' | 'suspect' {
           const repoUrl = (typeof pkg.repository === 'string'
             ? pkg.repository
             : pkg.repository?.url) ?? '';
-          const parsedSlug = normalizeGbrainRepoSlug(repoUrl);
           if (
             repoUrl.toLowerCase().includes(configuredRepo.toLowerCase()) ||
-            repoUrl.toLowerCase().includes(GBRAIN_GITHUB_REPO.toLowerCase()) ||
-            (parsedSlug !== null && /\/gbrain$/i.test(parsedSlug))
+            repoUrl.toLowerCase().includes(GBRAIN_GITHUB_REPO.toLowerCase())
           ) {
             return 'canonical';
           }
-          // Source-marker fallback: our published-as-source install always
+          // Source-marker fallback: our published-as-source install (including
+          // forks installed via `bun add -g github:<owner>/gbrain`) always
           // ships src/cli.ts next to package.json. The squatter ships dist/.
           if (existsSync(join(dir, 'src', 'cli.ts'))) {
             return 'canonical';
