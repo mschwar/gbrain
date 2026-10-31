@@ -197,10 +197,10 @@ describe('collectBackupCoverage local (remote:false)', () => {
     expect(noRemoteFinding).toBeDefined();
     expect(noRemoteFinding?.severity).toBe('warn');
     expect(noRemoteFinding?.title).toContain('zebra-no-remote-src');
-    // The recipe detail (plain repo, not bootstrap-initialized → argv null).
+    // The recipe detail + actionable harden fix_argv for plain repos.
     expect(noRemoteFinding?.detail).toContain('git remote add origin <url>');
     expect(noRemoteFinding?.detail).toContain('gbrain sources harden');
-    expect(noRemoteFinding?.fix.command_argv).toBeNull();
+    expect(noRemoteFinding?.fix.command_argv).toEqual(['gbrain', 'sources', 'harden', 'zebra-no-remote-src']);
 
     const unpushedFinding = findings.find((f) => f.id === 'backup_unpushed_work');
     expect(unpushedFinding).toBeDefined();
