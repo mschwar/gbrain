@@ -255,12 +255,16 @@ export class FileVaultBackend implements CredentialVault {
     });
   }
 
-  async list(filter?: { provider?: string }): Promise<CredentialMeta[]> {
+  listSync(filter?: { provider?: string }): CredentialMeta[] {
     const shape = this.read();
     return Object.values(shape.credentials)
       .filter((e) => !filter?.provider || e.provider === filter.provider)
       .map(redactEntry)
       .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  async list(filter?: { provider?: string }): Promise<CredentialMeta[]> {
+    return this.listSync(filter);
   }
 
   async delete(id: string): Promise<boolean> {
@@ -301,4 +305,68 @@ export class FileVaultBackend implements CredentialVault {
 /** The default vault for CLI/self-host callers. */
 export function openVault(): CredentialVault {
   return new FileVaultBackend();
+}
+
+/**
+ * Derive UpperSnakeCase integration secret names satisfied by redacted
+ * `vault.list()` metadata entries without exposing secret material.
+ */
+export function vaultEnvKeysFromMetas(metas: readonly CredentialMeta[]): Set<string> {
+  const keys = new Set<string>();
+  for (const m of metas) {
+    const idTrimmed = m.id.trim();
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(idTrimmed)) {
+      keys.add(idTrimmed.toUpperCase());
+    }
+    const colonIdx = idTrimmed.indexOf(':');
+    const providerLower = m.provider.trim().toLowerCase();
+    if (colonIdx >= 0) {
+      const acct = idTrimmed.slice(colonIdx + 1).trim();
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) && (acct.includes('_') || providerLower === 'env')) {
+        keys.add(acct.toUpperCase());
+      }
+    }
+    if (m.account) {
+      const acct = m.account.trim();
+      if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(acct) && (acct.includes('_') || providerLower === 'env')) {
+        keys.add(acct.toUpperCase());
+      }
+    }
+
+    const p = m.provider.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!p || p === 'ENV') continue;
+
+    if (m.kind === 'oauth2') {
+      keys.add(`${p}_CLIENT_ID`);
+      keys.add(`${p}_CLIENT_SECRET`);
+    } else if (m.kind === 'api_key') {
+      keys.add(`${p}_API_KEY`);
+    } else if (m.kind === 'bearer') {
+      keys.add(`${p}_API_BEARER_TOKEN`);
+      keys.add(`${p}_BEARER_TOKEN`);
+      keys.add(`${p}_TOKEN`);
+      keys.add(`${p}_AUTH_TOKEN`);
+      keys.add(`${p}_AUTHTOKEN`);
+      keys.add(`${p}_AGENT_TOKEN`);
+    }
+  }
+  return keys;
+}
+
+/** Async vault-key lookup via `vault.list()` (fail-open pre-init / unreadable). */
+export async function listVaultEnvKeys(vault: CredentialVault = openVault()): Promise<Set<string>> {
+  try {
+    return vaultEnvKeysFromMetas(await vault.list());
+  } catch {
+    return new Set();
+  }
+}
+
+/** Synchronous file-vault key lookup sharing `vaultEnvKeysFromMetas` with `vault.list()`. */
+export function readVaultEnvKeysSync(vault: FileVaultBackend = new FileVaultBackend()): Set<string> {
+  try {
+    return vaultEnvKeysFromMetas(vault.listSync());
+  } catch {
+    return new Set();
+  }
 }

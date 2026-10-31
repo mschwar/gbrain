@@ -25,6 +25,7 @@ import { join, basename } from 'path';
 import { homedir } from 'os';
 import { gbrainPath, loadConfig } from '../core/config.ts';
 import { buildGatewayConfig } from '../core/ai/build-gateway-config.ts';
+import { listVaultEnvKeys, readVaultEnvKeysSync } from '../core/creds/vault.ts';
 import { execSync } from 'child_process';
 
 // --- Types ---
@@ -309,7 +310,7 @@ export async function executeHealthCheck(
     }
 
     case 'env_exists': {
-      const val = secretEnv()[check.name];
+      const val = Boolean(secretEnv()[check.name]) || (await listVaultEnvKeys()).has(check.name);
       return {
         ...base,
         status: val ? 'ok' : 'fail',
@@ -567,8 +568,9 @@ export function checkSecrets(secrets: RecipeSecret[]): { set: string[]; missing:
   const set: string[] = [];
   const missing: RecipeSecret[] = [];
   const env = secretEnv();
+  const vaultKeys = readVaultEnvKeysSync();
   for (const s of secrets) {
-    if (env[s.name]) {
+    if (env[s.name] || vaultKeys.has(s.name)) {
       set.push(s.name);
     } else {
       missing.push(s);
@@ -611,12 +613,16 @@ function checkEnvRefs(check: HealthCheck): string[] {
  * secret stored only in ~/.gbrain/config.json counts — same source `checkSecrets` and
  * the env_exists health-check runner read, keeping getStatus consistent with them.
  */
-function branchSatisfiedByEnv(check: HealthCheck, env: Record<string, string | undefined>): boolean {
+export function branchSatisfiedByEnv(
+  check: HealthCheck,
+  env: Record<string, string | undefined>,
+  vaultKeys: ReadonlySet<string> = readVaultEnvKeysSync(),
+): boolean {
   if (typeof check === 'string') return false;
-  if (check.type === 'any_of') return check.checks.some(c => branchSatisfiedByEnv(c, env));
+  if (check.type === 'any_of') return check.checks.some(c => branchSatisfiedByEnv(c, env, vaultKeys));
   if (check.type === 'command') return false;
   const refs = checkEnvRefs(check);
-  return refs.length > 0 && refs.every(v => !!env[v]);
+  return refs.length > 0 && refs.every(v => !!env[v] || vaultKeys.has(v));
 }
 
 /**
@@ -634,7 +640,8 @@ function authConfigured(recipe: ParsedRecipe): boolean {
   );
   if (anyOfGroups.length > 0) {
     const env = secretEnv();
-    return anyOfGroups.every(g => g.checks.some(c => branchSatisfiedByEnv(c, env)));
+    const vaultKeys = readVaultEnvKeysSync();
+    return anyOfGroups.every(g => g.checks.some(c => branchSatisfiedByEnv(c, env, vaultKeys)));
   }
   return checkSecrets(recipe.frontmatter.secrets).missing.length === 0;
 }
@@ -773,8 +780,9 @@ function cmdShow(args: string[]): void {
 
   console.log('\nSecrets needed:');
   const env = secretEnv();
+  const vaultKeys = readVaultEnvKeysSync();
   for (const s of f.secrets) {
-    const isSet = env[s.name] ? '  [set]' : '  [missing]';
+    const isSet = env[s.name] || vaultKeys.has(s.name) ? '  [set]' : '  [missing]';
     console.log(`  ${s.name}${isSet}`);
     console.log(`    ${s.description}`);
     console.log(`    Get it: ${s.where}`);
