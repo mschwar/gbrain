@@ -6,14 +6,6 @@ name: Actionlint
 # timeouts); this is the cheap guard that keeps those edits honest.
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/**'
-  pull_request:
-    branches: [master]
-    paths:
-      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
