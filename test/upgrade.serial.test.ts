@@ -357,3 +357,169 @@ describe('runUpgrade target verification (#4366)', () => {
     }
   });
 });
+
+describe('fork-aware repo slug & detectInstallMethod', () => {
+  const origArgv1 = process.argv[1];
+  const origSlug = process.env.GBRAIN_REPO_SLUG;
+
+  function restore() {
+    process.argv[1] = origArgv1;
+    if (origSlug === undefined) delete process.env.GBRAIN_REPO_SLUG;
+    else process.env.GBRAIN_REPO_SLUG = origSlug;
+  }
+
+  test('detectInstallMethod detects bun-link on a fork-only .git/config and resolves the fork slug', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-fork-only-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/acme-fork/gbrain.git\n',
+      );
+      writeFileSync(join(dir, 'src', 'cli.ts'), '// stub\n');
+      process.argv[1] = join(dir, 'src', 'cli.ts');
+
+      expect(upgradeModule.detectInstallMethod()).toBe('bun-link');
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('acme-fork/gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('resolveGbrainRepoSlug prefers non-upstream fork remote when both origin (upstream) and fork exist', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-dual-remote-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/garrytan/gbrain.git\n' +
+          '[remote "fork"]\n\turl = git@github.com:acme-fork/gbrain.git\n',
+      );
+
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('acme-fork/gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('GBRAIN_REPO_SLUG overrides detected .git/config remotes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-env-slug-'));
+    try {
+      process.env.GBRAIN_REPO_SLUG = 'github:custom-org/custom-gbrain.git';
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/custom-org/custom-gbrain.git\n',
+      );
+      writeFileSync(join(dir, 'src', 'cli.ts'), '// stub\n');
+      process.argv[1] = join(dir, 'src', 'cli.ts');
+
+      expect(upgradeModule.detectInstallMethod()).toBe('bun-link');
+      expect(upgradeModule.resolveGbrainRepoSlug(dir)).toBe('custom-org/custom-gbrain');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('normalizeGbrainRepoSlug handles git+https, git+ssh, ssh://:22, and #tag specs', () => {
+    expect(upgradeModule.normalizeGbrainRepoSlug('git+https://github.com/acme-fork/gbrain.git')).toBe('acme-fork/gbrain');
+    expect(upgradeModule.normalizeGbrainRepoSlug('git+ssh://git@github.com/acme-fork/gbrain.git')).toBe('acme-fork/gbrain');
+    expect(upgradeModule.normalizeGbrainRepoSlug('ssh://git@github.com:22/acme-fork/gbrain.git')).toBe('acme-fork/gbrain');
+    expect(upgradeModule.normalizeGbrainRepoSlug('github:acme-fork/gbrain#v0.47.4.0')).toBe('acme-fork/gbrain');
+  });
+
+  test('global bun install of a fork (without GBRAIN_REPO_SLUG) resolves fork slug from global package.json dependencies', () => {
+    const bunInstall = mkdtempSync(join(tmpdir(), 'gbrain-bun-fork-global-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      const prevBunInstall = process.env.BUN_INSTALL;
+      process.env.BUN_INSTALL = bunInstall;
+      try {
+        const globalRoot = join(bunInstall, 'install', 'global');
+        const pkgRoot = join(globalRoot, 'node_modules', 'gbrain');
+        mkdirSync(join(pkgRoot, 'src'), { recursive: true });
+        writeFileSync(
+          join(globalRoot, 'package.json'),
+          JSON.stringify({ dependencies: { gbrain: 'github:acme-fork/gbrain#v0.47.4.0' } }),
+        );
+        // Fork kept upstream's repository field in its own package.json:
+        writeFileSync(
+          join(pkgRoot, 'package.json'),
+          JSON.stringify({ name: 'gbrain', repository: 'git+https://github.com/garrytan/gbrain.git' }),
+        );
+        writeFileSync(join(pkgRoot, 'src', 'cli.ts'), '// stub\n');
+        process.argv[1] = join(pkgRoot, 'src', 'cli.ts');
+
+        expect(upgradeModule.resolveGbrainRepoSlug()).toBe('acme-fork/gbrain');
+      } finally {
+        if (prevBunInstall === undefined) delete process.env.BUN_INSTALL;
+        else process.env.BUN_INSTALL = prevBunInstall;
+      }
+    } finally {
+      restore();
+      rmSync(bunInstall, { recursive: true, force: true });
+    }
+  });
+
+  test('foreign repo with a [submodule] mentioning gbrain is NOT detected as bun-link', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-foreign-submod-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      mkdirSync(join(dir, '.git'), { recursive: true });
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(
+        join(dir, '.git', 'config'),
+        '[remote "origin"]\n\turl = https://github.com/example-org/other-tool.git\n' +
+          '[submodule "vendor/gbrain"]\n\turl = https://github.com/garrytan/gbrain.git\n',
+      );
+      writeFileSync(join(dir, 'src', 'cli.ts'), '// stub\n');
+      process.argv[1] = join(dir, 'src', 'cli.ts');
+
+      expect(upgradeModule.extractGbrainRemotesFromGitConfig(readFileSync(join(dir, '.git', 'config'), 'utf-8'))).toEqual([]);
+      expect(upgradeModule.detectInstallMethod()).not.toBe('bun-link');
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('planBunLinkPull pins explicit fork remote/branch and refuses detached HEAD or missing fork remote', () => {
+    const { execFileSync } = require('child_process');
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-pull-plan-'));
+    try {
+      delete process.env.GBRAIN_REPO_SLUG;
+      execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+      writeFileSync(join(dir, 'README.md'), 'hi\n');
+      execFileSync('git', ['-C', dir, 'add', 'README.md']);
+      execFileSync('git', ['-C', dir, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-q', '-m', 'init']);
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', 'https://github.com/garrytan/gbrain.git']);
+      execFileSync('git', ['-C', dir, 'remote', 'add', 'fork', 'git@github.com:acme-fork/gbrain.git']);
+
+      expect(upgradeModule.planBunLinkPull(dir, 'acme-fork/gbrain')).toEqual({
+        kind: 'explicit',
+        remote: 'fork',
+        branch: 'main',
+      });
+      expect(upgradeModule.planBunLinkPull(dir, 'missing-fork/gbrain').kind).toBe('error');
+
+      // Detach HEAD and confirm fail-closed refusal:
+      const sha = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+      execFileSync('git', ['-C', dir, 'checkout', '-q', sha]);
+      const detached = upgradeModule.planBunLinkPull(dir, 'acme-fork/gbrain');
+      expect(detached.kind).toBe('error');
+      if (detached.kind === 'error') {
+        expect(detached.reason).toContain('detached HEAD');
+      }
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

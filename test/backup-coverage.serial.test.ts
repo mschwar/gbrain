@@ -212,7 +212,7 @@ describe('computeBackupCoverage — source repos', () => {
     expect(asset?.id).toBe('src-a');
     expect(asset?.state).toBe('no_remote');
     expect(asset?.detail).toContain('git remote add origin');
-    expect(asset?.fix_argv).toBeNull(); // no bootstrap manifest → recipe only
+    expect(asset?.fix_argv).toEqual(['gbrain', 'sources', 'harden', 'src-a']);
     expect(s.overall).toBe('warn');
     expect(s.totals.no_remote).toBe(1);
   });
@@ -275,9 +275,27 @@ describe('computeBackupCoverage — source repos', () => {
     expect(repos[0]?.id).toBe('ghost-src');
     expect(repos[0]?.state).toBe('unknown');
     expect(repos[0]?.detail).toBe('local_path not found on this machine');
-    expect(repos[0]?.fix_argv).toBeNull();
+    expect(repos[0]?.fix_argv).toEqual(['gbrain', 'sources', 'archive', 'ghost-src']);
     expect(s.totals.assets).toBe(1); // the missing-path asset IS counted
     expect(s.overall).toBe('ok'); // unknown never flips warn
+  });
+
+  test('MISSING local_path on a remote_url-backed source emits gbrain sync --source <id> fix_argv', async () => {
+    const engine = stubEngine({
+      sources: [
+        srcRow('remote-ghost', join(tmp, 'missing-clone-dir'), {
+          config: { remote_url: 'https://example.com/acme-example/notes.git' },
+        }),
+      ],
+    });
+
+    const s = await computeBackupCoverage(engine, { localGitProbes: true });
+
+    const repos = s.assets.filter((a) => a.kind === 'source_repo');
+    expect(repos).toHaveLength(1);
+    expect(repos[0]?.id).toBe('remote-ghost');
+    expect(repos[0]?.state).toBe('unknown');
+    expect(repos[0]?.fix_argv).toEqual(['gbrain', 'sync', '--source', 'remote-ghost']);
   });
 
   test('remote added but NOTHING pushed → no_remote (nothing pushed), overall warn', async () => {
@@ -299,7 +317,7 @@ describe('computeBackupCoverage — source repos', () => {
     expect(asset?.state).toBe('no_remote');
     expect(asset?.detail).toContain('nothing pushed');
     expect(asset?.detail).toContain('git push -u origin');
-    expect(asset?.fix_argv).toBeNull();
+    expect(asset?.fix_argv).toEqual(['gbrain', 'sources', 'push', 'src-never-pushed']);
     expect(s.overall).toBe('warn');
     expect(s.totals.no_remote).toBe(1);
     expect(s.totals.recoverable_repos).toBe(0); // nothing on the remote to recover

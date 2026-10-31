@@ -23,7 +23,7 @@ import { execFileSync } from 'node:child_process';
 
 import { VERSION } from '../../version.ts';
 import type { BrainEngine } from '../engine.ts';
-import { loadAllSources } from '../sources-load.ts';
+import { loadAllSources, parseSourceConfig } from '../sources-load.ts';
 import { discoverGitRoot } from '../sync-git.ts';
 import { GIT_ENV, detectDefaultBranch, isWorkingTreeDirty } from '../git-remote.ts';
 import { aheadCount, readPushStatusForRoot } from '../workspace-push.ts';
@@ -207,13 +207,18 @@ export async function computeBackupCoverage(
       if (!existsSync(row.local_path)) {
         // The most disk-loss-adjacent state of all: a registered path that is
         // GONE. Surface it (unknown — it may live on another machine or have
-        // moved) instead of silently skipping.
+        // moved) instead of silently skipping. Managed remote clones can
+        // self-heal via sync; retired/moved local paths can be archived safely.
+        const cfg = parseSourceConfig(row.config);
+        const hasRemoteUrl = typeof cfg.remote_url === 'string' && cfg.remote_url.trim().length > 0;
         pushAsset(assets, {
           kind: 'source_repo',
           id: row.id,
           state: 'unknown',
           detail: 'local_path not found on this machine',
-          fix_argv: null,
+          fix_argv: hasRemoteUrl
+            ? ['gbrain', 'sync', '--source', row.id]
+            : ['gbrain', 'sources', 'archive', row.id],
         });
         continue;
       }
@@ -304,8 +309,8 @@ export async function computeBackupCoverage(
           continue;
         }
         if (origin === 'absent') {
-          // Bootstrap-initialized roots get the mechanical fix; plain repos
-          // get the recipe in detail (no single mechanical fix — argv null).
+          // Bootstrap-initialized roots get `bootstrap repo`; plain repos get
+          // the remote recipe in detail plus `sources harden <id>` in fix_argv.
           let initialized = false;
           try {
             initialized = readManifest(root).state === 'initialized';
@@ -317,7 +322,9 @@ export async function computeBackupCoverage(
             id,
             state: 'no_remote',
             detail: RECIPE_DETAIL,
-            fix_argv: initialized ? ['gbrain', 'bootstrap', 'repo'] : null,
+            fix_argv: initialized
+              ? ['gbrain', 'bootstrap', 'repo']
+              : ['gbrain', 'sources', 'harden', ids[0]!],
           });
           continue;
         }
@@ -332,7 +339,7 @@ export async function computeBackupCoverage(
             id,
             state: 'no_remote',
             detail: `remote configured but nothing pushed (origin/${branch} not found) — run: git push -u origin ${branch}`,
-            fix_argv: null,
+            fix_argv: ['gbrain', 'sources', 'push', ids[0]!],
           });
           continue;
         }

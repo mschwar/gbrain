@@ -169,18 +169,25 @@ function quoteAmbiguousFrontmatterScalars(content: string): string {
     .map(line => {
       // Top-level `key: value` only — indented lines (list items, nested
       // maps) never match this anchor, so they pass through untouched.
-      const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*):[ \t]+(.+)$/);
+      const kv = line.match(/^([a-zA-Z_][a-zA-Z0-9_-]*):[ \t]+(.+?)(\r?)$/);
       if (!kv) return line;
       const key = kv[1]!;
       const value = kv[2]!;
-      // Already quoted, a flow collection, or a block-scalar indicator —
-      // caller already handled quoting correctly; leave it alone.
-      if (/^['"[{|>]/.test(value)) return line;
-      // The ambiguous cases gray-matter/js-yaml chokes on: an embedded
-      // ": " (looks like a nested mapping key) or a trailing ":".
-      if (!value.includes(': ') && !value.endsWith(':')) return line;
+      const eol = kv[3]!;
+      // Obsidian `[[Wikilink]]` scalars begin with `[[`, which js-yaml
+      // otherwise misparses as a YAML flow sequence (crashing on trailing
+      // commas/text like `related: [[Note A]], [[Note B]]`). Distinguish
+      // wikilinks from quoted 2D YAML arrays like `[["a", "b"]]`.
+      const startsWithWikilink = /^\[\[(?!['"\s])[^\[\]\r\n]+\]\]/.test(value);
+      // Already quoted, a non-wikilink flow collection, a block-scalar
+      // indicator, or an inline YAML comment (`key: # note: ...`) — leave it alone.
+      if (!startsWithWikilink && /^['"[{|>#]/.test(value)) return line;
+      // The ambiguous cases gray-matter/js-yaml chokes on: a leading
+      // Obsidian wikilink, an embedded ": " (looks like a nested mapping
+      // key), or a trailing ":".
+      if (!startsWithWikilink && !value.includes(': ') && !value.endsWith(':')) return line;
       const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      return `${key}: "${escaped}"`;
+      return `${key}: "${escaped}"${eol}`;
     })
     .join('\n');
 
@@ -264,7 +271,7 @@ export function parseMarkdown(
   }
 
   if (opts?.validate) {
-    collectValidationErrors(content, errors, {
+    collectValidationErrors(safeContent, errors, {
       yamlParseError,
       expectedSlug: opts.expectedSlug,
       parsedFrontmatter: parsed?.data ?? {},
