@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "required_checks": ["GitGuardian Security Checks"],
+  "retired_checks": [
+    "cache-check",
+    "test-status",
+    "e2e-cache-check",
+    "Heavy tests",
+    "actionlint",
+    "osv-scan",
+    "semgrep",
+    "SonarCloud Code Analysis"
+  ],
+  "base_branch": "master",
+  "notes": "Hosted cloud-VM PR/cron workflows retired to workflow_dispatch (release.yml preserved); run local verification on the host and require GitGuardian Security Checks on the PR head."
+}

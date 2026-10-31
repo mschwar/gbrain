@@ -6,10 +6,6 @@ name: Semgrep
 # read-only, no security-events: write).
 
 on:
-  pull_request:
-    branches: [master]
-  schedule:
-    - cron: '30 7 * * 1'  # weekly, Monday 07:30 UTC
   workflow_dispatch:
 
 permissions:

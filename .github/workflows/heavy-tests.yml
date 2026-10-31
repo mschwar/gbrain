@@ -9,14 +9,6 @@ name: Heavy Tests
 # See CLAUDE.md "tests/heavy/*.sh" entry and tests/heavy/README.md.
 
 on:
-  schedule:
-    - cron: '17 8 * * *'  # 08:17 UTC daily — staggered to avoid noisy slots
-  pull_request:
-    # `synchronize` + `reopened` fire on subsequent pushes / reopens — without
-    # them, a PR labeled `heavy-tests` would NEVER re-run heavy on later
-    # commits. The job-level `if:` below filters to PRs that still carry the
-    # label so we don't fan out on unrelated label changes.
-    types: [labeled, synchronize, reopened]
   workflow_dispatch:
     inputs:
       run_grok_door:
