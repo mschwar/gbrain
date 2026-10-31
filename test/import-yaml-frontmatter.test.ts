@@ -43,7 +43,7 @@ describe('import YAML frontmatter validation', () => {
   test('importFromContent rejects invalid YAML frontmatter instead of importing it as body', async () => {
     const content = `---
 type: note
-title: Re: October booking
+tags: [unclosed-flow-sequence
 ---
 
 Body text.
@@ -54,7 +54,7 @@ Body text.
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('Invalid YAML frontmatter');
-    expect(result.error).toContain('title: Re: October booking');
+    expect(result.error).toContain('[[wikilinks]]');
     expect((engine as any)._calls).toEqual([]);
   });
 
@@ -64,7 +64,7 @@ Body text.
       const filePath = join(dir, 'reply.md');
       writeFileSync(filePath, `---
 type: note
-title: Re: October booking
+tags: [unclosed-flow-sequence
 ---
 
 Body text.
@@ -75,8 +75,60 @@ Body text.
 
       expect(result.status).toBe('skipped');
       expect(result.error).toContain('Invalid YAML frontmatter');
-      expect(result.error).toContain('title: Re: October booking');
+      expect(result.error).toContain('[[wikilinks]]');
       expect((engine as any)._calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('unquoted colon-bearing scalars on bare and hyphenated keys are rescued on import', async () => {
+    const content = `---
+type: note
+title: Re: October booking
+source-title: Everything is Context bookmark: Agentic file systems
+---
+
+Body text.
+`;
+
+    const engine = mockEngine();
+    const result = await importFromContent(engine, 'bookmarks/agentic-file-systems', content, { noEmbed: true });
+
+    expect(result.status).toBe('imported');
+    expect(result.error).toBeUndefined();
+    const putCall = (engine as any)._calls.find((call: any) => call.method === 'putPage');
+    expect(putCall.args[1].title).toBe('Re: October booking');
+    expect(putCall.args[1].frontmatter['source-title']).toBe('Everything is Context bookmark: Agentic file systems');
+  });
+
+  test('unquoted Obsidian [[Wikilink]] frontmatter scalars import cleanly while preserving YAML flow arrays', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-wikilink-yaml-'));
+    try {
+      const filePath = join(dir, 'bookmark.md');
+      writeFileSync(filePath, `---
+type: note
+title: Agentic Workflow Notes
+related: [[Model Alpha]], [[Paper Archive]], [[Agent Workflow]]
+primary-topic: [[Agent Workflow|Workflow: Agents]]
+tags: [bookmarks, agents]
+topics: [bookmarks, agents]
+matrix: [["a", "b"], ["c", "d"]]
+---
+
+Body text.
+`);
+
+      const engine = mockEngine();
+      const result = await importFile(engine, filePath, 'bookmarks/workflow-notes.md', { noEmbed: true });
+
+      expect(result.status).toBe('imported');
+      expect(result.error).toBeUndefined();
+      const putCall = (engine as any)._calls.find((call: any) => call.method === 'putPage');
+      expect(putCall.args[1].frontmatter.related).toBe('[[Model Alpha]], [[Paper Archive]], [[Agent Workflow]]');
+      expect(putCall.args[1].frontmatter['primary-topic']).toBe('[[Agent Workflow|Workflow: Agents]]');
+      expect(putCall.args[1].frontmatter.topics).toEqual(['bookmarks', 'agents']);
+      expect(putCall.args[1].frontmatter.matrix).toEqual([['a', 'b'], ['c', 'd']]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

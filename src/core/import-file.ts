@@ -280,7 +280,7 @@ function invalidYamlFrontmatterError(parsed: ReturnType<typeof parseMarkdown>): 
   const yamlError = parsed.errors?.find((error) => error.code === 'YAML_PARSE');
   if (!yamlError) return null;
   const detail = yamlError.message.replace(/^YAML parse failed:\s*/, '').trim();
-  return `Invalid YAML frontmatter: ${detail}. Quote scalar values that contain ": " or fix the frontmatter block.`;
+  return `Invalid YAML frontmatter: ${detail}. Quote scalar values that contain ": " or "[[wikilinks]]", or fix the frontmatter block.`;
 }
 
 /**
